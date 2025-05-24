@@ -3,6 +3,7 @@ package main
 import (
 	"busca-cpf/database"
 	"busca-cpf/handlers"
+	"io/ioutil"
 	"log"
 	"os"
 	"time"
@@ -10,10 +11,26 @@ import (
 	"github.com/elastic/go-elasticsearch"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
+var appVersion = "N/A"
+
+func loadAppVersion() {
+	versionBytes, err := ioutil.ReadFile("VERSION") // Lê da raiz do projeto backend
+	if err != nil {
+		log.Printf("Aviso: Arquivo VERSION não encontrado. Usando '%s'. Certifique-se que o script de deploy o baixe.", appVersion)
+		return
+	}
+	appVersion = strings.trimSpace(string(versionBytes))
+	log.Printf("Versão da Aplicação: %s", appVersion)
+}
+
 func main() {
+	godotenv.Load()  // Carrega .env
+	loadAppVersion() // Carrega a versão da aplicação
+
 	// Conexão com PostgreSQL
 	db, err := database.ConnectPostgres()
 	if err != nil {
@@ -52,6 +69,9 @@ func main() {
 	r.GET("/api/search", handlers.SearchUsers(db, rdb, es))
 	r.GET("/api/user/:id", handlers.GetUserDetails(db))
 	r.GET("/api/surname-suggestions", handlers.GetSurnameSuggestions(db, rdb))
+	r.GET("/api/version", func(c *gin.Context) {
+		c.JSON(200, gin.H{"version": appVersion})
+	})
 
 	// Inicia o servidor
 	r.Run(":8080")

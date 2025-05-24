@@ -1,0 +1,45 @@
+# (Um arquivo similar deve existir em ConsultaGlobal/.github/workflows/trigger-server-deploy.yml,
+# apenas mudando o comando no script para 'www' no caso do frontend)
+name: Trigger Server Deploy
+
+on:
+  repository_dispatch:
+    types: [trigger-server-deploy] # DEVE CORRESPONDER ao event-type enviado pelo ConsultaGlobal-shared
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Display Event Payload
+        run: |
+          echo "Workflow acionado por repository_dispatch"
+          echo "Evento completo: ${{ toJSON(github.event) }}"
+          echo "Client Payload: ${{ toJSON(github.event.client_payload) }}"
+          echo "Nova versão do payload: ${{ github.event.client_payload.new_version }}"
+          echo "Repositório que disparou o evento original (shared): ${{ github.event.client_payload.triggered_by_repo }}"
+          echo "Branch que disparou o evento original (shared): ${{ github.event.client_payload.triggering_repo_ref }}"
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY_SERVER }} # Chave SSH para acessar SEU servidor
+          port: ${{ secrets.SERVER_PORT }}
+          script: |
+            echo "Iniciando deploy no servidor..."
+            echo "Nova versão para deploy: ${{ github.event.client_payload.new_version }}"
+            
+            # Determina se é API (backend) ou WWW (frontend)
+            # Você pode ajustar essa lógica se necessário, ou ter dois arquivos de workflow ligeiramente diferentes
+            SERVICE_TYPE="api" # Para Consulta.Global (backend)
+            # Para ConsultaGlobal (frontend), você mudaria para SERVICE_TYPE="www"
+            
+            # Se o repositório atual for o frontend, mude o SERVICE_TYPE
+            if [ "${{ github.repository }}" = "fxlip/ConsultaGlobal" ]; then
+              SERVICE_TYPE="www"
+            fi
+
+            echo "Deployando serviço: $SERVICE_TYPE"
+            cd /home/user/ConsultaGlobal/scripts # Ou o caminho correto para seus scripts
+            bash cmd.sh update $SERVICE_TYPE "${{ github.event.client_payload.new_version }}"

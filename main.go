@@ -73,6 +73,6 @@ func main() {
 		c.JSON(200, gin.H{"version": appVersion})
 	})
 
-	// Inicia o servidor
+	// Inicia o servidor na porta especificada
 	r.Run(":" + os.Getenv("PORT"))
 }

@@ -1,0 +1,53 @@
+# (Um arquivo idêntico, exceto talvez por paths, deve existir em Consulta.Global)
+name: Trigger Global Version Up
+
+on:
+  push:
+    branches:
+      - main # Ou seu branch de desenvolvimento principal
+
+jobs:
+  trigger-up: # Removida a condição 'if' daqui, o job sempre roda
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine Increment Type from Commit Message
+        id: increment_info
+        run: |
+          commit_message="${{ github.event.head_commit.message }}"
+          increment="patch" # Default para patch
+          new_stage_val=""
+
+          echo "Analisando mensagem de commit: $commit_message"
+
+          if [[ "$commit_message" == *"[up major]"* ]]; then
+            increment="major"
+            echo "Tipo de incremento definido para: major"
+          elif [[ "$commit_message" == *"[up minor]"* ]]; then
+            increment="minor"
+            echo "Tipo de incremento definido para: minor"
+          elif [[ "$commit_message" == *"[up stage "*"]"* ]]; then # Ex: [up stage beta]
+            increment="stage"
+            new_stage_val=$(echo "$commit_message" | sed -n 's/.*\[up stage \([^]]*\)\].*/\1/p')
+            echo "Tipo de incremento definido para: stage, Novo estágio: $new_stage_val"
+          elif [[ "$commit_message" == *"[up clear-stage]"* ]]; then
+            increment="clear-stage"
+            echo "Tipo de incremento definido para: clear-stage"
+          else
+            echo "Nenhum especificador de incremento encontrado. Usando default: patch"
+          fi
+          
+          echo "increment_type=${increment}" >> $GITHUB_OUTPUT
+          echo "new_stage=${new_stage_val}" >> $GITHUB_OUTPUT
+
+      - name: Trigger Version Up in ConsultaGlobal-shared
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: up-and-dispatch.yml # Nome do workflow no repo de versão
+          repo: fxlip/ConsultaGlobal-shared # Repositório de versão
+          token: ${{ secrets.PAT_WORKFLOW_TRIGGER }} # PAT para acionar workflow no ConsultaGlobal-shared
+          inputs: '{
+            "increment_type": "${{ steps.increment_info.outputs.increment_type }}",
+            "new_stage": "${{ steps.increment_info.outputs.new_stage }}",
+            "triggered_by_repo": "${{ github.repository }}",
+            "triggering_repo_ref": "${{ github.ref_name }}"
+          }'

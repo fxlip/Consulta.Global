@@ -1,0 +1,41 @@
+name: Update Version File (Backend)
+
+on:
+  repository_dispatch:
+    types: [update-version]
+
+jobs:
+  update-version-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      
+      - name: Update VERSION file
+        run: |
+          echo "Nova versão recebida: ${{ github.event.client_payload.new_version }}"
+          echo "Origem do gatilho inicial: ${{ github.event.client_payload.source_app_name }}"
+          echo "${{ github.event.client_payload.new_version }}" > VERSION
+          cat VERSION
+          
+      - name: Commit and push VERSION changes
+        run: |
+          git config --local user.email "bot@consulta.global"
+          git config --local user.name "version"
+          
+          git add VERSION
+          if git diff --staged --quiet; then
+            echo "No version change to commit in backend repository."
+          else
+            ORIGIN_APP_NAME="${{ github.event.client_payload.source_app_name }}"
+            if [ -z "$ORIGIN_APP_NAME" ]; then
+              ORIGIN_APP_NAME="shared"
+            fi
+            git commit -m "$ORIGIN_APP_NAME atualizado para ${{ github.event.client_payload.new_version }}"
+            git push
+            echo "Backend VERSION file updated and pushed."
+          fi
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}

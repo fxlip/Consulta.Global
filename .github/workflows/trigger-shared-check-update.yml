@@ -1,0 +1,64 @@
+name: Detect Version Update and Trigger Shared (Backend)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  check-commit-message:
+    # Não executa se o committer do commit for 'version'
+    if: github.event.head_commit.committer.name != 'version'
+    runs-on: ubuntu-latest
+    outputs:
+      increment_type: ${{ steps.check-message.outputs.increment_type }}
+      new_stage: ${{ steps.check-message.outputs.new_stage }}
+      should_update: ${{ steps.check-message.outputs.should_update }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check commit message for version update tag
+        id: check-message
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          INCREMENT_TYPE="patch" 
+          NEW_STAGE=""
+          SHOULD_UPDATE="true"
+
+          if [[ "$COMMIT_MSG" == *"[up major]"* ]]; then
+            INCREMENT_TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"[up minor]"* ]]; then
+            INCREMENT_TYPE="minor"
+          elif [[ "$COMMIT_MSG" == *"[up stage"* ]]; then
+            INCREMENT_TYPE="stage"
+            NEW_STAGE=$(echo "$COMMIT_MSG" | grep -o '\[up stage [^]]*\]' | sed 's/\[up stage \(.*\)\]/\1/')
+          elif [[ "$COMMIT_MSG" == *"[up patch]"* ]]; then
+            INCREMENT_TYPE="patch"
+          fi
+
+          echo "increment_type=$INCREMENT_TYPE" >> $GITHUB_OUTPUT
+          echo "new_stage=$NEW_STAGE" >> $GITHUB_OUTPUT
+          echo "should_update=$SHOULD_UPDATE" >> $GITHUB_OUTPUT
+          echo "Commit Message: $COMMIT_MSG"
+          echo "Determined Increment Type: $INCREMENT_TYPE"
+          echo "Determined New Stage: $NEW_STAGE"
+          echo "Should Update: $SHOULD_UPDATE"
+
+  trigger-shared-update:
+    needs: check-commit-message
+    if: always() && needs.check-commit-message.result == 'success' && needs.check-commit-message.outputs.should_update == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger workflow in shared repository
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GH_PAT }} # Ou um PAT específico para dispatch
+          repository: fxlip/ConsultaGlobal-shared
+          event-type: trigger-version-update
+          client-payload: '{
+            "increment_type": "${{ needs.check-commit-message.outputs.increment_type }}",
+            "new_stage": "${{ needs.check-commit-message.outputs.new_stage }}",
+            "triggered_by_repo": "${{ github.repository }}",
+            "triggering_repo_ref": "${{ github.ref }}"}'

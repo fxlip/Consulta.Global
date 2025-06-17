@@ -16,17 +16,18 @@ func SyncToElasticsearch(db *pgxpool.Pool) {
 		Addresses: []string{os.Getenv("ELASTICSEARCH_HOST")},
 	})
 
-	rows, _ := db.Query(context.Background(), "SELECT id, nome FROM usuarios")
+	rows, _ := db.Query(context.Background(), "SELECT id, primeiro_nome, sobrenome, nome_completo FROM pessoas_fisicas")
 	defer rows.Close()
 
 	for rows.Next() {
 		var id int
-		var nome string
-		rows.Scan(&id, &nome)
+		var primeiroNome, sobrenome, nomeCompleto string
+		rows.Scan(&id, &primeiroNome, &sobrenome, &nomeCompleto)
 
-		doc := fmt.Sprintf(`{ "nome": "%s" }`, nome)
+		doc := fmt.Sprintf(`{ "primeiro_nome": "%s", "sobrenome": "%s", "nome_completo": "%s" }`,
+			primeiroNome, sobrenome, nomeCompleto)
 		es.Index(
-			"usuarios",
+			"pessoas_fisicas",
 			strings.NewReader(doc),
 			es.Index.WithDocumentID(strconv.Itoa(id)),
 		)

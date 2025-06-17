@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -24,50 +25,66 @@ func GetSurnameSuggestions(db *pgxpool.Pool, rdb *redis.Client) gin.HandlerFunc 
 		}
 
 		ctx := context.Background()
+		// Normaliza a chave de cache para consistência
+		cacheKey := fmt.Sprintf("surname-suggestions:%s", strings.ToUpper(strings.TrimSpace(firstName)))
 
-		// Tenta obter do cache primeiro
-		cacheKey := fmt.Sprintf("surname-suggestions:%s", firstName)
 		cachedSuggestions, err := rdb.Get(ctx, cacheKey).Bytes()
 		if err == nil {
 			c.Data(http.StatusOK, "application/json", cachedSuggestions)
 			return
 		}
 
-		// Se não estiver em cache, busca no banco de dados
+		// Query revisada:
+		// 1. Busca em 'nome_completo' registros que começam com o 'firstName' fornecido.
+		// 2. Constrói o 'remaining_name' usando 'nome_meio' e 'sobrenome' da linha correspondente.
 		query := `
             SELECT DISTINCT
-                SUBSTRING(nome FROM POSITION(' ' IN nome) + 1) AS surname
-            FROM 
-                usuarios
-            WHERE 
-                nome ILIKE $1 || ' %' 
-                AND POSITION(' ' IN nome) > 0
-            ORDER BY 
-                surname
-            LIMIT 10
+                sub.constructed_remaining_name AS remaining_name
+            FROM (
+                SELECT
+                    pessoas_fisicas.id, -- Incluído para DISTINCT funcionar como esperado se houver outras colunas
+                    CONCAT_WS(' ', NULLIF(TRIM(pessoas_fisicas.nome_meio), ''), NULLIF(TRIM(pessoas_fisicas.sobrenome), '')) AS constructed_remaining_name
+                FROM
+                    pessoas_fisicas
+                WHERE
+                    UPPER(pessoas_fisicas.nome_completo) LIKE UPPER(TRIM($1)) || ' %'  -- Busca no início de nome_completo
+                    AND LENGTH(pessoas_fisicas.nome_completo) > (LENGTH(TRIM($1)) + 1) -- Garante que há algo após o primeiro nome e espaço
+            ) AS sub
+            WHERE
+                sub.constructed_remaining_name <> '' -- Filtra sugestões que resultariam vazias (sem nome_meio nem sobrenome)
+            ORDER BY
+                remaining_name
+            LIMIT 10;
         `
 
-		rows, err := db.Query(ctx, query, firstName)
+		rows, err := db.Query(ctx, query, firstName) // firstName é $1
 		if err != nil {
+			log.Printf("Erro ao buscar sugestões de sobrenome (Query revisada): %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Erro ao buscar sugestões"})
 			return
 		}
 		defer rows.Close()
 
-		var surnames []string
+		var suggestions []string
 		for rows.Next() {
-			var surname string
-			if err := rows.Scan(&surname); err != nil {
-				continue // Ignora erros individuais
+			var remainingName string
+			if err := rows.Scan(&remainingName); err != nil {
+				log.Printf("Erro ao escanear remaining_name para sugestão (Query revisada): %v", err)
+				continue
 			}
-			surnames = append(surnames, surname)
+			if strings.TrimSpace(remainingName) != "" { // Segurança adicional, embora a query deva filtrar
+				suggestions = append(suggestions, remainingName)
+			}
 		}
 
-		// Armazena em cache por 1 hora
-		jsonData, _ := json.Marshal(surnames)
+		if rows.Err() != nil {
+			log.Printf("Erro durante a iteração das linhas de sugestões (Query revisada): %v", rows.Err())
+		}
+
+		jsonData, _ := json.Marshal(suggestions)
 		rdb.Set(ctx, cacheKey, jsonData, time.Hour)
 
-		c.JSON(http.StatusOK, surnames)
+		c.JSON(http.StatusOK, suggestions)
 	}
 }
 
@@ -83,9 +100,9 @@ func GetUserDetails(db *pgxpool.Pool) gin.HandlerFunc {
 			Operadora string
 		}
 		err := db.QueryRow(context.Background(),
-			`SELECT id, nome, cpf_cnpj, operadora 
-             FROM usuarios 
-             WHERE id = $1`, id,
+			`SELECT id, nome_completo as nome, cpf as cpf_cnpj, fonte_dados_id as operadora 
+			FROM pessoas_fisicas 
+			WHERE id = $1`, id,
 		).Scan(&usuario.ID, &usuario.Nome, &usuario.CPF_CNPJ, &usuario.Operadora)
 
 		if err != nil {
@@ -103,7 +120,7 @@ func GetUserDetails(db *pgxpool.Pool) gin.HandlerFunc {
 		var telefones []Telefone
 
 		rowsTel, err := db.Query(context.Background(),
-			"SELECT ddd, numero, tipo FROM telefones WHERE usuario_id = $1", id)
+			"SELECT ddd, numero, tipo FROM telefones WHERE pessoa_fisica_id = $1", id)
 		if err == nil {
 			defer rowsTel.Close()
 			for rowsTel.Next() {
@@ -125,7 +142,7 @@ func GetUserDetails(db *pgxpool.Pool) gin.HandlerFunc {
 		var enderecos []Endereco
 
 		rowsEnd, err := db.Query(context.Background(),
-			"SELECT logradouro, numero_endereco, cidade, uf FROM enderecos WHERE usuario_id = $1", id)
+			"SELECT logradouro, numero_endereco, cidade, uf FROM enderecos WHERE pessoa_fisica_id = $1", id)
 		if err == nil {
 			defer rowsEnd.Close()
 			for rowsEnd.Next() {
@@ -192,7 +209,7 @@ func SearchUsers(db *pgxpool.Pool, rdb *redis.Client, es *elasticsearch.Client) 
 		{
 			"query": {
 				"match": {
-					"nome": {
+					"nome_completo": {
 						"query": "%s",
 						"fuzziness": "AUTO"
 					}
@@ -201,7 +218,7 @@ func SearchUsers(db *pgxpool.Pool, rdb *redis.Client, es *elasticsearch.Client) 
 		}`, term)
 
 		res, err := es.Search(
-			es.Search.WithIndex("usuarios"),
+			es.Search.WithIndex("pessoas_fisicas"), // Mudou de "usuarios" para "pessoas_fisicas"
 			es.Search.WithBody(strings.NewReader(query)),
 		)
 		if err != nil {
@@ -222,7 +239,7 @@ func SearchUsers(db *pgxpool.Pool, rdb *redis.Client, es *elasticsearch.Client) 
 			source := hit.(map[string]interface{})["_source"].(map[string]interface{})
 			results = append(results, map[string]interface{}{
 				"id":   hit.(map[string]interface{})["_id"],
-				"nome": source["nome"],
+				"nome": source["nome_completo"], // Mudança de "nome" para "nome_completo"
 			})
 		}
 
